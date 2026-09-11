@@ -1483,9 +1483,8 @@ impl std::fmt::Debug for NonLocalKind {
 }
 
 impl NonLocalBinding {
-    /// Returns the `name` field common to all variants. A `BunOpaque` has
-    /// none and gets a label for its tag. To tell two bindings apart use
-    /// `loads_same_value`, not the name.
+    /// Returns the `name` field common to all variants, or a label for a
+    /// `BunOpaque`. Not an identity: see `loads_same_value`.
     pub fn name(&self) -> &[u8] {
         match &self.kind {
             NonLocalKind::ImportDefault { name, .. }
@@ -1510,11 +1509,9 @@ impl NonLocalBinding {
         }
     }
 
-    /// Whether both bindings are known to load the same value. Upstream
-    /// compares `binding.name`. Here a name does not identify a binding: every
-    /// `require("...")` is a `BunOpaque` labelled `require`, and the parser
-    /// names the import item it makes for `ns.member` after the export, so
-    /// `light.name` and `dark.name` are two symbols named `name`.
+    /// Whether both bindings are known to load the same value. Names do not
+    /// tell: `require("a")` and `require("b")` are both `require`, and the
+    /// import items for `light.name` and `dark.name` are both `name`.
     pub fn loads_same_value(&self, other: &Self) -> bool {
         use bun_ast::E::Special;
         use bun_ast::ExprData as Data;

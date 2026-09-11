@@ -1481,11 +1481,9 @@ describe("bundler", () => {
     }
   }
 
-  // The compiler forwards a global to every read of the local that holds it,
-  // and folds a local that is the same global on every path. Upstream tells
-  // two globals apart by name. In bun a name does not do that, so a local that
-  // is one module on one path and another module on the other path read as the
-  // first module on both.
+  // The compiler folds a local that is the same global on every path. It told
+  // two globals apart by name, which in bun does not identify one: a local that
+  // is a different module per path read as the first module on both.
   const reactStub = {
     "/node_modules/react/package.json": `{"name":"react","main":"./index.js"}`,
     "/node_modules/react/index.js": /* js */ `
