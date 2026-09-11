@@ -1483,8 +1483,7 @@ impl std::fmt::Debug for NonLocalKind {
 }
 
 impl NonLocalBinding {
-    /// Returns the `name` field common to all variants, or a label for a
-    /// `BunOpaque`. Not an identity: see `loads_same_value`.
+    /// Returns the `name` field common to all variants.
     pub fn name(&self) -> &[u8] {
         match &self.kind {
             NonLocalKind::ImportDefault { name, .. }
@@ -1509,9 +1508,7 @@ impl NonLocalBinding {
         }
     }
 
-    /// Whether both bindings are known to load the same value. Names do not
-    /// tell: `require("a")` and `require("b")` are both `require`, and the
-    /// import items for `light.name` and `dark.name` are both `name`.
+    /// Whether both load the same value. `name()` cannot tell: two symbols can share one.
     pub fn loads_same_value(&self, other: &Self) -> bool {
         use bun_ast::E::Special;
         use bun_ast::ExprData as Data;
