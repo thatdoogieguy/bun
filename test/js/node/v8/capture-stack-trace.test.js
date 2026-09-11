@@ -627,37 +627,37 @@ test.concurrent("CallFrame.p.getFunction hides internal callees from sloppy code
   expect(exitCode).toBe(0);
 });
 
-test.concurrent("CallFrame.p.getFunction does not expose a native promise reaction", async () => {
-  using dir = tempDir("callsite-promise-reaction", {
-    "promise-reaction-fixture.cjs": `
-      let leaked;
-      function element(el) {
-        Error.prepareStackTrace = (e, sites) => sites;
-        for (const site of new Error().stack) {
-          if (site.isNative() && !site.getFunctionName() && typeof site.getFunction() === "function") {
-            leaked = site.getFunction();
-          }
-        }
-        Error.prepareStackTrace = undefined;
-        // The rewriter suspends only while this promise is pending. The
-        // suspension installs the native reaction whose frame the handler for
-        // the second <p> can see.
-        return new Promise(resolve => setTimeout(resolve, 1));
-      }
+// Bun installs native promise reactions so that a pending user promise can
+// resume native work. Each reaction reads its trailing argument as a native
+// context, so each of the three below crashed the process when user code got
+// hold of it and called it. Every fixture keeps the nameless native function
+// that getFunction() reports and then calls it.
+const grabNativeReaction = `
+  let leaked;
+  function grabNativeReaction() {
+    const previous = Error.prepareStackTrace;
+    Error.prepareStackTrace = (e, sites) => sites;
+    for (const site of new Error().stack) {
+      let fn;
+      try {
+        fn = site.getFunction();
+      } catch {}
+      if (typeof fn === "function" && site.isNative() && !fn.name) leaked = fn;
+    }
+    Error.prepareStackTrace = previous;
+  }
+  function reportAndCallLeaked() {
+    console.log("leaked=" + typeof leaked);
+    if (typeof leaked === "function") leaked({}, undefined);
+    console.log("survived");
+  }
+`;
 
-      new HTMLRewriter()
-        .on("p", { element })
-        .transform(new Response("<p>a</p><p>b</p>"))
-        .text()
-        .then(() => {
-          console.log("leaked=" + typeof leaked);
-          if (typeof leaked === "function") leaked(undefined, undefined);
-        });
-    `,
-  });
+async function runNativeReactionFixture(prefix, files) {
+  using dir = tempDir(prefix, files);
 
   await using proc = Bun.spawn({
-    cmd: [bunExe(), "promise-reaction-fixture.cjs"],
+    cmd: [bunExe(), "fixture.cjs"],
     env: bunEnv,
     cwd: String(dir),
     stderr: "pipe",
@@ -665,9 +665,91 @@ test.concurrent("CallFrame.p.getFunction does not expose a native promise reacti
 
   const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
 
-  expect(stdout.trim()).toBe("leaked=undefined");
+  expect(stdout.trim().split("\n")).toEqual(["leaked=undefined", "survived"]);
   expect(stderr).toBe("");
   expect(exitCode).toBe(0);
+}
+
+test.concurrent("CallFrame.p.getFunction does not expose the HTMLRewriter reaction", async () => {
+  await runNativeReactionFixture("callsite-rewriter-reaction", {
+    "fixture.cjs": `
+      ${grabNativeReaction}
+
+      new HTMLRewriter()
+        .on("p", {
+          element() {
+            grabNativeReaction();
+            // The rewriter suspends only while this promise is pending. The
+            // suspension installs the reaction whose frame the handler for the
+            // second <p> can see.
+            return new Promise(resolve => setTimeout(resolve, 1));
+          },
+        })
+        .transform(new Response("<p>a</p><p>b</p>"))
+        .text()
+        .then(reportAndCallLeaked);
+    `,
+  });
+});
+
+test.concurrent("CallFrame.p.getFunction does not expose the serve reject reaction", async () => {
+  await runNativeReactionFixture("callsite-serve-reaction", {
+    "fixture.cjs": `
+      ${grabNativeReaction}
+
+      // error() runs under the reaction that rejected the fetch() promise.
+      const server = Bun.serve({
+        port: 0,
+        hostname: "127.0.0.1",
+        fetch: () => new Promise((resolve, reject) => setTimeout(() => reject(new Error("x")), 1)),
+        error() {
+          grabNativeReaction();
+          return new Response("e");
+        },
+      });
+
+      fetch(server.url)
+        .then(response => response.text())
+        .then(async () => {
+          await server.stop(true);
+          reportAndCallLeaked();
+        });
+    `,
+  });
+});
+
+test.concurrent("CallFrame.p.getFunction does not expose the module loader reaction", async () => {
+  await runNativeReactionFixture("callsite-module-loader-reaction", {
+    "mod.xyzzy": "",
+    "fixture.cjs": `
+      ${grabNativeReaction}
+
+      // The reaction reads the plugin result object, so this getter runs under
+      // its frame.
+      Bun.plugin({
+        name: "x",
+        setup(build) {
+          build.onLoad({ filter: /\\.xyzzy$/ }, () =>
+            new Promise(resolve =>
+              setTimeout(
+                () =>
+                  resolve({
+                    get contents() {
+                      grabNativeReaction();
+                      return "export default 1";
+                    },
+                    loader: "js",
+                  }),
+                1,
+              ),
+            ),
+          );
+        },
+      });
+
+      import(require("path").join(__dirname, "mod.xyzzy")).then(reportAndCallLeaked);
+    `,
+  });
 });
 
 test("return non-strings from Error.prepareStackTrace", () => {

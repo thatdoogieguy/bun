@@ -1258,7 +1258,12 @@ BUN_DEFINE_HOST_FUNCTION(jsFunctionOnLoadObjectResultResolve, (JSC::JSGlobalObje
     auto& vm = JSC::getVM(globalObject);
     ErrorableResolvedSource res;
     JSC::JSValue objectResult = callFrame->argument(0);
-    PendingVirtualModuleResult* pendingModule = uncheckedDowncast<PendingVirtualModuleResult>(callFrame->argument(1));
+    // This handler only ever runs with the cell it was installed with. Check
+    // the type anyway: every read below goes straight into internal fields.
+    PendingVirtualModuleResult* pendingModule = dynamicDowncast<PendingVirtualModuleResult>(callFrame->argument(1));
+    if (!pendingModule) [[unlikely]] {
+        return JSValue::encode(jsUndefined());
+    }
     JSC::JSValue specifierString = pendingModule->internalField(0).get();
     JSC::JSValue referrerString = pendingModule->internalField(1).get();
     pendingModule->internalField(0).set(vm, pendingModule, JSC::jsUndefined());
@@ -1294,7 +1299,10 @@ BUN_DEFINE_HOST_FUNCTION(jsFunctionOnLoadObjectResultReject, (JSC::JSGlobalObjec
 {
     auto& vm = JSC::getVM(globalObject);
     JSC::JSValue reason = callFrame->argument(0);
-    PendingVirtualModuleResult* pendingModule = uncheckedDowncast<PendingVirtualModuleResult>(callFrame->argument(1));
+    PendingVirtualModuleResult* pendingModule = dynamicDowncast<PendingVirtualModuleResult>(callFrame->argument(1));
+    if (!pendingModule) [[unlikely]] {
+        return JSValue::encode(jsUndefined());
+    }
     pendingModule->internalField(0).set(vm, pendingModule, JSC::jsUndefined());
     pendingModule->internalField(1).set(vm, pendingModule, JSC::jsUndefined());
     JSC::JSPromise* promise = pendingModule->internalPromise();
