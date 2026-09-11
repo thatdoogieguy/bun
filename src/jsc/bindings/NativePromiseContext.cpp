@@ -68,6 +68,13 @@ extern "C" JSC::EncodedJSValue Bun__NativePromiseContext__create(Zig::GlobalObje
 
 extern "C" void* Bun__NativePromiseContext__take(JSC::EncodedJSValue encodedValue)
 {
-    auto* cell = uncheckedDowncast<Bun::NativePromiseContext>(JSC::JSValue::decode(encodedValue));
+    // A handler only ever receives the cell it was created with. Check the type
+    // anyway: take() reads a raw pointer out of the cell, so a foreign cell
+    // here becomes a wild pointer. Null is the "already taken" answer that
+    // every caller handles.
+    auto* cell = dynamicDowncast<Bun::NativePromiseContext>(JSC::JSValue::decode(encodedValue));
+    if (!cell) [[unlikely]] {
+        return nullptr;
+    }
     return cell->take();
 }

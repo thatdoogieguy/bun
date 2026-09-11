@@ -551,6 +551,125 @@ test("CallFrame.p.isNative", () => {
   Error.prepareStackTrace = prevPrepareStackTrace;
 });
 
+// getFunction() hands out the frame's callee. A JSC frame can carry a callee
+// that user code could never call itself: a host function, a builtin, or the
+// body function JSC compiles for an async function or a generator. A body
+// function takes JSC's own arguments, so a call from JS crashes the
+// interpreter. V8 reports such a frame as strict, which returns undefined.
+// The fixture is CommonJS because a strict frame already returns undefined.
+test.concurrent("CallFrame.p.getFunction hides internal callees from sloppy code", async () => {
+  using dir = tempDir("callsite-internal-callee", {
+    "internal-callee-fixture.cjs": `
+      const { nativeFrameForTesting } = require("bun:internal-for-testing");
+      Error.prepareStackTrace = (e, sites) => sites;
+
+      const out = [];
+      const show = v => (typeof v === "function" ? "function/" + v.length : String(v));
+
+      function sloppy() {
+        out.push("sloppy=" + (new Error().stack[0].getFunction() === sloppy ? "self" : "?"));
+      }
+      sloppy();
+
+      nativeFrameForTesting(function underNativeFrame() {
+        const sites = new Error().stack;
+        out.push("nativeIsNative=" + sites[1].isNative());
+        out.push("native=" + show(sites[1].getFunction()));
+        return 0;
+      });
+
+      [0].map(function underHostFunction() {
+        const site = new Error().stack.find(s => s.getFunctionName() === "map");
+        out.push("hostFound=" + !!site);
+        out.push("host=" + show(site && site.getFunction()));
+      });
+
+      (async function af() {
+        await 1;
+        const asyncBody = new Error().stack[0].getFunction();
+        out.push("asyncBody=" + show(asyncBody));
+        if (typeof asyncBody === "function") asyncBody();
+
+        function* gen() {
+          yield 1;
+          const generatorBody = new Error().stack[0].getFunction();
+          out.push("generatorBody=" + show(generatorBody));
+          if (typeof generatorBody === "function") generatorBody();
+        }
+        const it = gen();
+        it.next();
+        it.next();
+
+        console.log(out.join("\\n"));
+      })();
+    `,
+  });
+
+  await using proc = Bun.spawn({
+    cmd: [bunExe(), "internal-callee-fixture.cjs"],
+    env: bunEnv,
+    cwd: String(dir),
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+
+  expect(stdout.trim().split("\n")).toEqual([
+    "sloppy=self",
+    "nativeIsNative=true",
+    "native=undefined",
+    "hostFound=true",
+    "host=undefined",
+    "asyncBody=undefined",
+    "generatorBody=undefined",
+  ]);
+  expect(stderr).toBe("");
+  expect(exitCode).toBe(0);
+});
+
+test.concurrent("CallFrame.p.getFunction does not expose a native promise reaction", async () => {
+  using dir = tempDir("callsite-promise-reaction", {
+    "promise-reaction-fixture.cjs": `
+      let leaked;
+      function element(el) {
+        Error.prepareStackTrace = (e, sites) => sites;
+        for (const site of new Error().stack) {
+          if (site.isNative() && !site.getFunctionName() && typeof site.getFunction() === "function") {
+            leaked = site.getFunction();
+          }
+        }
+        Error.prepareStackTrace = undefined;
+        // The rewriter suspends only while this promise is pending. The
+        // suspension installs the native reaction whose frame the handler for
+        // the second <p> can see.
+        return new Promise(resolve => setTimeout(resolve, 1));
+      }
+
+      new HTMLRewriter()
+        .on("p", { element })
+        .transform(new Response("<p>a</p><p>b</p>"))
+        .text()
+        .then(() => {
+          console.log("leaked=" + typeof leaked);
+          if (typeof leaked === "function") leaked(undefined, undefined);
+        });
+    `,
+  });
+
+  await using proc = Bun.spawn({
+    cmd: [bunExe(), "promise-reaction-fixture.cjs"],
+    env: bunEnv,
+    cwd: String(dir),
+    stderr: "pipe",
+  });
+
+  const [stdout, stderr, exitCode] = await Promise.all([proc.stdout.text(), proc.stderr.text(), proc.exited]);
+
+  expect(stdout.trim()).toBe("leaked=undefined");
+  expect(stderr).toBe("");
+  expect(exitCode).toBe(0);
+});
+
 test("return non-strings from Error.prepareStackTrace", () => {
   // This behavior is allowed by V8 and used by the node-depd npm package.
   let prevPrepareStackTrace = Error.prepareStackTrace;

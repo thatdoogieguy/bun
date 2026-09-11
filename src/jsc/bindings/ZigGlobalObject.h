@@ -421,8 +421,11 @@ public:
             return func;
         }
 
+        // Private: a handler reads its trailing argument as a native context.
+        // Private frames never reach a stack trace, so nothing can hand one of
+        // these to user code through CallSite.getFunction().
         JSFunction* func = JSC::JSFunction::create(vm(), this, 2,
-            String(), handler, ImplementationVisibility::Public);
+            String(), handler, ImplementationVisibility::Private);
 
         barrier.set(vm(), this, func);
         return func;

@@ -20,6 +20,28 @@ namespace Zig {
 
 const JSC::ClassInfo CallSite::s_info = { "CallSite"_s, &Base::s_info, nullptr, nullptr, CREATE_METHOD_TABLE(CallSite) };
 
+/* getFunction() hands out the frame's callee. A JSC frame can have a callee that
+ * user code could never call itself: a host function, a builtin, or the body
+ * function that JSC compiles for an async function or a generator. A body
+ * function takes JSC's own arguments (the generator object, a state, a value, a
+ * resume mode and a frame), so a call from JS writes generator internal fields
+ * into whatever the caller passed. V8 has no such functions and reports a frame
+ * it cannot attribute to user code as strict, so getFunction() and getThis()
+ * return undefined for it and for every caller below it. Do the same. */
+static bool isUserFunction(JSC::JSCell* callee)
+{
+    if (!callee) {
+        return false;
+    }
+
+    auto* function = dynamicDowncast<JSC::JSFunction>(callee);
+    if (!function || function->isHostFunction() || function->isBuiltinFunction()) {
+        return false;
+    }
+
+    return !JSC::isGeneratorOrAsyncFunctionBodyParseMode(function->jsExecutable()->parseMode());
+}
+
 void CallSite::finishCreation(VM& vm, JSCStackFrame& stackFrame, bool encounteredStrictFrame)
 {
     Base::finishCreation(vm);
@@ -37,6 +59,9 @@ void CallSite::finishCreation(VM& vm, JSCStackFrame& stackFrame, bool encountere
         if (codeBlock) {
             isStrictFrame = codeBlock->ownerExecutable()->isInStrictContext();
         }
+    }
+    if (!isStrictFrame) {
+        isStrictFrame = !isUserFunction(stackFrame.callee());
     }
 
     // JSC::StackFrame has no receiver, so getThis() is always undefined.
