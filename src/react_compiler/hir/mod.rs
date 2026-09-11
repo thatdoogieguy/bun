@@ -1484,7 +1484,8 @@ impl std::fmt::Debug for NonLocalKind {
 
 impl NonLocalBinding {
     /// Returns the `name` field common to all variants. A `BunOpaque` has
-    /// none: it gets a label for its tag, which does not identify the value.
+    /// none and gets a label for its tag. To tell two bindings apart use
+    /// `loads_same_value`, not the name.
     pub fn name(&self) -> &[u8] {
         match &self.kind {
             NonLocalKind::ImportDefault { name, .. }
@@ -1509,16 +1510,25 @@ impl NonLocalBinding {
         }
     }
 
-    /// Whether both bindings load the same value. Upstream compares
-    /// `binding.name`, but every `BunOpaque` of one tag shares a `name()`:
-    /// `require("a")` and `require("b")` are both `require`.
+    /// Whether both bindings are known to load the same value. Upstream
+    /// compares `binding.name`. Here a name does not identify a binding: every
+    /// `require("...")` is a `BunOpaque` labelled `require`, and the parser
+    /// names the import item it makes for `ns.member` after the export, so
+    /// `light.name` and `dark.name` are two symbols named `name`.
     pub fn loads_same_value(&self, other: &Self) -> bool {
         use bun_ast::E::Special;
         use bun_ast::ExprData as Data;
         let (a, b) = match (&self.kind, &other.kind) {
             (NonLocalKind::BunOpaque(a), NonLocalKind::BunOpaque(b)) => (a, b),
             (NonLocalKind::BunOpaque(_), _) | (_, NonLocalKind::BunOpaque(_)) => return false,
-            _ => return self.name() == other.name(),
+            _ => {
+                return match (self.ref_(), other.ref_()) {
+                    (Some(a), Some(b)) => a == b,
+                    // Synthesized by the compiler: the name is all there is.
+                    (None, None) => self.name() == other.name(),
+                    (Some(_), None) | (None, Some(_)) => false,
+                };
+            }
         };
         match (a.data, b.data) {
             // Each `require()` call site has its own import record.

@@ -1481,9 +1481,9 @@ describe("bundler", () => {
     }
   }
 
-  // The compiler sees `require("a")` as a global it can forward to every read
-  // of the local that holds it. Upstream tells two globals apart by name, and
-  // to the compiler every `require("...")` is named `require`, so a local that
+  // The compiler forwards a global to every read of the local that holds it,
+  // and folds a local that is the same global on every path. Upstream tells
+  // two globals apart by name. In bun a name does not do that, so a local that
   // is one module on one path and another module on the other path read as the
   // first module on both.
   const reactStub = {
@@ -1497,20 +1497,24 @@ describe("bundler", () => {
       }
     `,
   };
+  // Prints `Form=<flag is true> <flag is false>` for every export of ./forms.
+  const callEveryForm = /* js */ `
+    import * as forms from "./forms";
+    const lines = [];
+    for (const [name, form] of Object.entries(forms)) {
+      try {
+        lines.push(name + "=" + form({ flag: true }) + " " + form({ flag: false }));
+      } catch (e) {
+        lines.push(name + " threw " + e);
+      }
+    }
+    console.log(lines.join("\\n"));
+  `;
+
+  // `require("a")` is one node to the compiler, a global named `require`.
   itBundled("react-compiler/LocalHoldsADifferentRequirePerPath", {
     files: {
-      "/entry.js": /* js */ `
-        import * as forms from "./forms";
-        const lines = [];
-        for (const [name, form] of Object.entries(forms)) {
-          try {
-            lines.push(name + "=" + form({ flag: true }) + " " + form({ flag: false }));
-          } catch (e) {
-            lines.push(name + " threw " + e);
-          }
-        }
-        console.log(lines.join("\\n"));
-      `,
+      "/entry.js": callEveryForm,
       "/forms.jsx": /* jsx */ `
         import { useEffect } from "react";
 
@@ -1632,6 +1636,73 @@ describe("bundler", () => {
     backend: "cli",
     target: "bun",
     run: { stdout: "state other" },
+    onAfterBundle(api) {
+      expect(api.readFile("/out.js")).not.toMatch(/\(\(\) => \{\s*\}\)/);
+    },
+  });
+
+  // The parser turns `ns.member` off `import * as ns` into an import item, a
+  // symbol named after the export: `light.name` and `dark.name` are two
+  // symbols named `name`.
+  itBundled("react-compiler/LocalHoldsTheSameExportOfADifferentModulePerPath", {
+    files: {
+      "/entry.js": callEveryForm,
+      "/forms.jsx": /* jsx */ `
+        import { useEffect } from "react";
+        import * as light from "./light";
+        import * as dark from "./dark";
+
+        export function Ternary({ flag }) {
+          useEffect(() => {});
+          const picked = flag ? dark.name : light.name;
+          return picked;
+        }
+        export function IfElse({ flag }) {
+          useEffect(() => {});
+          let picked;
+          if (flag) picked = dark.name;
+          else picked = light.name;
+          return picked;
+        }
+        export function ReadInClosure({ flag }) {
+          useEffect(() => {});
+          const picked = flag ? dark.name : light.name;
+          const read = () => picked;
+          return read();
+        }
+        export function DifferentExports({ flag }) {
+          useEffect(() => {});
+          const picked = flag ? dark.background : light.name;
+          return picked;
+        }
+        export function SameExport({ flag }) {
+          useEffect(() => {});
+          const picked = flag ? dark.name : dark.name;
+          return picked;
+        }
+      `,
+      "/light.js": /* js */ `
+        export const name = "light";
+        export const background = "#fff";
+      `,
+      "/dark.js": /* js */ `
+        export const name = "dark";
+        export const background = "#000";
+      `,
+      ...reactStub,
+    },
+    reactCompiler: true,
+    backend: "cli",
+    target: "bun",
+    run: {
+      stdout: `
+        DifferentExports=#000 light
+        IfElse=dark light
+        ReadInClosure=dark light
+        SameExport=dark dark
+        Ternary=dark light
+      `,
+    },
     onAfterBundle(api) {
       expect(api.readFile("/out.js")).not.toMatch(/\(\(\) => \{\s*\}\)/);
     },
