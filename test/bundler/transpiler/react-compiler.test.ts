@@ -1480,6 +1480,188 @@ describe("bundler", () => {
       });
     }
   }
+
+  // The compiler sees `require("a")` as a global it can forward to every read
+  // of the local that holds it. Upstream tells two globals apart by name, and
+  // to the compiler every `require("...")` is named `require`, so a local that
+  // is one module on one path and another module on the other path read as the
+  // first module on both.
+  const reactStub = {
+    "/node_modules/react/package.json": `{"name":"react","main":"./index.js"}`,
+    "/node_modules/react/index.js": /* js */ `
+      export function useEffect() {}
+    `,
+    "/node_modules/react/compiler-runtime.js": /* js */ `
+      export function c(size) {
+        return new Array(size).fill(Symbol.for("react.memo_cache_sentinel"));
+      }
+    `,
+  };
+  itBundled("react-compiler/LocalHoldsADifferentRequirePerPath", {
+    files: {
+      "/entry.js": /* js */ `
+        import * as forms from "./forms";
+        const lines = [];
+        for (const [name, form] of Object.entries(forms)) {
+          try {
+            lines.push(name + "=" + form({ flag: true }) + " " + form({ flag: false }));
+          } catch (e) {
+            lines.push(name + " threw " + e);
+          }
+        }
+        console.log(lines.join("\\n"));
+      `,
+      "/forms.jsx": /* jsx */ `
+        import { useEffect } from "react";
+
+        export function Ternary({ flag }) {
+          useEffect(() => {});
+          const m = flag ? require("./one.cjs") : require("./two.cjs");
+          return m.name;
+        }
+        export function IfElse({ flag }) {
+          useEffect(() => {});
+          let m;
+          if (flag) m = require("node:path");
+          else m = require("node:util");
+          return typeof m.join + "/" + typeof m.inspect;
+        }
+        export function Switch({ flag }) {
+          useEffect(() => {});
+          let m;
+          switch (flag) {
+            case true:
+              m = require("./one.cjs");
+              break;
+            default:
+              m = require("./two.cjs");
+          }
+          return m.name;
+        }
+        export function NestedArrow({ flag }) {
+          useEffect(() => {});
+          const pick = first => {
+            let m;
+            if (first) m = require("./one.cjs");
+            else m = require("./two.cjs");
+            return m.name;
+          };
+          return pick(flag);
+        }
+        export function Reassign({ flag }) {
+          useEffect(() => {});
+          let m = require("./one.cjs");
+          if (flag) m = require("./two.cjs");
+          return m.name;
+        }
+        export function TwoLocals({ flag }) {
+          useEffect(() => {});
+          const one = require("./one.cjs");
+          const two = require("./two.cjs");
+          const m = flag ? one : two;
+          return m.name;
+        }
+        export function Resolve({ flag }) {
+          useEffect(() => {});
+          const resolved = flag ? require.resolve("node:path") : require.resolve("node:util");
+          return resolved;
+        }
+        export function RequireOrModule({ flag }) {
+          useEffect(() => {});
+          const m = flag ? require : require("./one.cjs");
+          return typeof m;
+        }
+        export function SameModule({ flag }) {
+          useEffect(() => {});
+          const m = flag ? require("./one.cjs") : require("./one.cjs");
+          return m.name;
+        }
+        export function ModuleOrNull({ flag }) {
+          useEffect(() => {});
+          const m = flag ? require("./one.cjs") : null;
+          return m ? m.name : "null";
+        }
+      `,
+      "/one.cjs": `exports.name = "one";`,
+      "/two.cjs": `exports.name = "two";`,
+      ...reactStub,
+    },
+    reactCompiler: true,
+    backend: "cli",
+    target: "bun",
+    run: {
+      stdout: `
+        IfElse=function/undefined undefined/function
+        ModuleOrNull=one null
+        NestedArrow=one two
+        Reassign=two one
+        RequireOrModule=function object
+        Resolve=path util
+        SameModule=one one
+        Switch=one two
+        Ternary=one two
+        TwoLocals=one two
+      `,
+    },
+    onAfterBundle(api) {
+      // Every form compiled: the compiler drops the effect (ssr), so no call
+      // takes `() => {}` any more.
+      expect(api.readFile("/out.js")).not.toMatch(/\(\(\) => \{\s*\}\)/);
+    },
+  });
+
+  // With two ES modules the path that lost its module printed as nothing:
+  // `flag ? __toCommonJS(exports_state) : ;`.
+  itBundled("react-compiler/LocalHoldsADifferentEsModulePerPath", {
+    files: {
+      "/entry.jsx": /* jsx */ `
+        import { useEffect } from "react";
+
+        function App({ flag }) {
+          useEffect(() => {});
+          const m = flag ? require("./state") : require("./other");
+          return m.name;
+        }
+        console.log(App({ flag: true }), App({ flag: false }));
+      `,
+      "/state.js": `export const name = "state";`,
+      "/other.js": `export const name = "other";`,
+      ...reactStub,
+    },
+    reactCompiler: true,
+    backend: "cli",
+    target: "bun",
+    run: { stdout: "state other" },
+    onAfterBundle(api) {
+      expect(api.readFile("/out.js")).not.toMatch(/\(\(\) => \{\s*\}\)/);
+    },
+  });
+
+  // `--minify-syntax` turns `!import.meta.main` into an inverted
+  // `import.meta.main` node. Both are named `import.meta.main`.
+  itBundled("react-compiler/LocalHoldsImportMetaMainOrItsNegation", {
+    files: {
+      "/entry.jsx": /* jsx */ `
+        import { useEffect } from "react";
+
+        function Main({ flag }) {
+          useEffect(() => {});
+          const main = flag ? import.meta.main : !import.meta.main;
+          return String(main);
+        }
+        console.log(Main({ flag: true }), Main({ flag: false }));
+      `,
+      ...reactStub,
+    },
+    reactCompiler: true,
+    minifySyntax: true,
+    backend: "cli",
+    target: "bun",
+    run: { stdout: "true false" },
+    onAfterBundle(api) {
+      expect(api.readFile("/out.js")).not.toMatch(/\(\(\) => \{\s*\}\)/);
+    },
+  });
 });
 
 // validate_locals_not_reassigned_after_render (src/react_compiler/validation)

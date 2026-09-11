@@ -1483,7 +1483,8 @@ impl std::fmt::Debug for NonLocalKind {
 }
 
 impl NonLocalBinding {
-    /// Returns the `name` field common to all variants.
+    /// Returns the `name` field common to all variants. A `BunOpaque` has
+    /// none: it gets a label for its tag, which does not identify the value.
     pub fn name(&self) -> &[u8] {
         match &self.kind {
             NonLocalKind::ImportDefault { name, .. }
@@ -1505,6 +1506,40 @@ impl NonLocalBinding {
                     _ => b"<bun-opaque>",
                 }
             }
+        }
+    }
+
+    /// Whether both bindings load the same value. Upstream compares
+    /// `binding.name`, but every `BunOpaque` of one tag shares a `name()`:
+    /// `require("a")` and `require("b")` are both `require`.
+    pub fn loads_same_value(&self, other: &Self) -> bool {
+        use bun_ast::E::Special;
+        use bun_ast::ExprData as Data;
+        let (a, b) = match (&self.kind, &other.kind) {
+            (NonLocalKind::BunOpaque(a), NonLocalKind::BunOpaque(b)) => (a, b),
+            (NonLocalKind::BunOpaque(_), _) | (_, NonLocalKind::BunOpaque(_)) => return false,
+            _ => return self.name() == other.name(),
+        };
+        match (a.data, b.data) {
+            // Each `require()` call site has its own import record.
+            (Data::ERequireString(a), Data::ERequireString(b)) => {
+                a.import_record_index == b.import_record_index
+            }
+            (Data::ERequireResolveString(a), Data::ERequireResolveString(b)) => {
+                a.import_record_index == b.import_record_index
+            }
+            (Data::EImportMetaMain(a), Data::EImportMetaMain(b)) => a.inverted == b.inverted,
+            (
+                Data::ESpecial(Special::ResolvedSpecifierString(a)),
+                Data::ESpecial(Special::ResolvedSpecifierString(b)),
+            ) => a == b,
+            (Data::ERequireCallTarget, Data::ERequireCallTarget)
+            | (Data::ERequireResolveCallTarget, Data::ERequireResolveCallTarget)
+            | (Data::ERequireMain, Data::ERequireMain)
+            | (Data::ESpecial(Special::ModuleExports), Data::ESpecial(Special::ModuleExports)) => {
+                true
+            }
+            _ => false,
         }
     }
 
